@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createEngineHistory, discoverEngineHistoryMetrics, engineHistoryCsv, engineHistoryPlot, readEngineHistoryValues } from "./engineHistory";
+import { createEngineHistory, discoverEngineHistoryMetrics, engineHistoryCsv, engineHistoryPlot, readEngineHistoryValues } from "../src/engineHistory";
 
 describe("native engine history", () => {
   it("records signed heat receipts only when requested and distinguishes warm seeding from an accepted step", () => {

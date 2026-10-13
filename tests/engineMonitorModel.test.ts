@@ -3,7 +3,7 @@ import {
   createTransitionLog, deriveEnginePhase, discoverReadableProperties, discreteEngineState, formatRowValue,
   formatValue, tankRows, type EngineSample,
   readEngineSample, enginePropertyApplies,
-} from "./engineMonitorModel";
+} from "../src/engineMonitorModel";
 
 const sample = (overrides: Partial<EngineSample> = {}): EngineSample => ({
   simTimeS: 10, n1Pct: 24.3, n2Pct: 53.4, rpm: null, thrustLbf: 90, fuelFlowPps: 0.0211, fuelFlowGph: 11.2,

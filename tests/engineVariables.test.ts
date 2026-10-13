@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { discoverEngineVariables, engineVariableInUnit } from "./engineVariables";
-import { readEngineHistoryValues } from "./engineHistory";
+import { discoverEngineVariables, engineVariableInUnit } from "../src/engineVariables";
+import { readEngineHistoryValues } from "../src/engineHistory";
 
 describe("authoritative engine variables", () => {
   it("keeps current, history and default grouping on one definition with a declared provisional envelope", () => {

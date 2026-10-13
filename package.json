@@ -1,0 +1,87 @@
+{
+  "name": "@0sfs/engines",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Common engine code for 0SFS: engine observations, the monitor and instruments, live history and the Engine panel.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "exports": {
+    "./engineControl": {
+      "source": "./src/engineControl.ts",
+      "default": "./src/engineControl.ts"
+    },
+    "./engineMonitor": {
+      "source": "./src/engineMonitor.ts",
+      "default": "./src/engineMonitor.ts"
+    },
+    "./engineMonitorModel": {
+      "source": "./src/engineMonitorModel.ts",
+      "default": "./src/engineMonitorModel.ts"
+    },
+    "./engineNozzleRig": {
+      "source": "./src/engineNozzleRig.ts",
+      "default": "./src/engineNozzleRig.ts"
+    },
+    "./engineOrbSettings": {
+      "source": "./src/engineOrbSettings.ts",
+      "default": "./src/engineOrbSettings.ts"
+    },
+    "./engineRotorDefinitions": {
+      "source": "./src/engineRotorDefinitions.ts",
+      "default": "./src/engineRotorDefinitions.ts"
+    },
+    "./engineSpoolAnimation": {
+      "source": "./src/engineSpoolAnimation.ts",
+      "default": "./src/engineSpoolAnimation.ts"
+    },
+    "./engineSpoolMotion": {
+      "source": "./src/engineSpoolMotion.ts",
+      "default": "./src/engineSpoolMotion.ts"
+    },
+    "./engineSpoolRenderer": {
+      "source": "./src/engineSpoolRenderer.ts",
+      "default": "./src/engineSpoolRenderer.ts"
+    },
+    "./engineSummary": {
+      "source": "./src/engineSummary.ts",
+      "default": "./src/engineSummary.ts"
+    },
+    "./engineTestStand": {
+      "source": "./src/engineTestStand.ts",
+      "default": "./src/engineTestStand.ts"
+    },
+    "./parameterCatalogue": {
+      "source": "./src/parameterCatalogue.ts",
+      "default": "./src/parameterCatalogue.ts"
+    },
+    "./settings": {
+      "source": "./src/settings.ts",
+      "default": "./src/settings.ts"
+    },
+    "./throttleLever": {
+      "source": "./src/throttleLever.ts",
+      "default": "./src/throttleLever.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "@0sfs/logging": "0.1.0",
+    "@babylonjs/core": "8.56.2",
+    "foss-earth": "0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@0sfs/logging": {
+      "optional": true
+    },
+    "@babylonjs/core": {
+      "optional": true
+    },
+    "foss-earth": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@felipegalind0/gamepad-tools": "0.1.0",
+    "vitest": "4.1.6"
+  }
+}

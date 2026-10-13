@@ -1,5 +1,5 @@
-import type { FlightRecorderPropertyReader } from "../diagnostics/flightRecorder";
-import type { EngineRotorBladeCounts } from "../aircraft/engineRotorDefinitions";
+import type { FlightRecorderPropertyReader } from "@0sfs/logging/flightRecorder";
+import type { EngineRotorBladeCounts } from "./engineRotorDefinitions";
 
 /**
  * What the loaded engine publishes, and what JSBSim is doing with it.
