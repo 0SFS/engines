@@ -3,16 +3,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createThrottleLever, SHUTDOWN_HOLD_MS, type ThrottleLeverEngine, type ThrottleLeverView } from "../src/throttleLever";
 
 /** A 114 px lever with a 14 px handle: 100 px of travel, idle's centre at y = 107. */
-function mount(view: Partial<ThrottleLeverView> = {}, engineControl = true) {
+function mount(view: Partial<ThrottleLeverView> = {}, engineControl = true, combined = false) {
   const box = document.createElement("div");
   box.className = "flight-hud__slider-control flight-hud__slider-control--throttle";
   document.body.append(box);
   const onThrottleChange = vi.fn();
   const onStartHold = vi.fn();
   const onShutdown = vi.fn();
-  const lever = createThrottleLever(box, engineControl
-    ? { onThrottleChange, onStartHold, onShutdown }
-    : { onThrottleChange });
+  const onPowerChange = vi.fn();
+  const lever = createThrottleLever(box, {
+    onThrottleChange,
+    ...(engineControl ? { onStartHold, onShutdown } : {}),
+    ...(combined ? { onPowerChange } : {}),
+  });
   const slider = box.querySelector<HTMLElement>('[data-control="throttle"]')!;
   const handle = box.querySelector<HTMLElement>(".flight-throttle__handle")!;
   vi.spyOn(slider, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 14, 114));
@@ -20,7 +23,7 @@ function mount(view: Partial<ThrottleLeverView> = {}, engineControl = true) {
   const output = box.querySelector("output")!;
   const show = (next: Partial<ThrottleLeverView>) => lever.update({ throttle: 0, engine: null, ...view, ...next });
   show({});
-  return { box, slider, output, lever, show, onThrottleChange, onStartHold, onShutdown };
+  return { box, slider, output, lever, show, onThrottleChange, onPowerChange, onStartHold, onShutdown };
 }
 
 const at = (value: number) => 107 - value * 100;
@@ -39,6 +42,199 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   document.body.replaceChildren();
+});
+
+describe("combined throttle and brake lever", () => {
+  it("releases keyboard brakes when the host updates synchronously during the command", () => {
+    const t = mount({}, false, true);
+    t.onPowerChange.mockImplementation(command => t.show(command));
+    key(t.slider, "keydown", "Home");
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 1 });
+    key(t.slider, "keyup", "Home");
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 0 });
+    expect(t.box.firstElementChild!.textContent).toBe("THR");
+    expect(t.output.value).toBe("0%");
+  });
+  it("uses the upper 80% for throttle and lower 20% for brakes in atomic commands", () => {
+    const t = mount({ engine: RUNNING }, true, true);
+    expect(t.slider.style.getPropertyValue("--throttle-value")).toBe("0.2");
+    pointer(t.slider, "pointerdown", at(0.6));
+    expect(t.onPowerChange.mock.lastCall![0].throttle).toBeCloseTo(0.5, 9);
+    expect(t.onPowerChange.mock.lastCall![0].brake).toBe(0);
+    pointer(t.slider, "pointermove", at(0.1));
+    expect(t.onPowerChange.mock.lastCall![0].throttle).toBe(0);
+    expect(t.onPowerChange.mock.lastCall![0].brake).toBeCloseTo(0.5, 9);
+    expect(t.box.firstElementChild!.textContent).toBe("BRK");
+    expect(t.output.value).toBe("50%");
+    expect(t.slider.getAttribute("aria-label")).toBe("Brakes");
+    expect(t.slider.getAttribute("aria-valuetext")).toBe("Brakes, 50%");
+    expect(t.slider.getAttribute("aria-valuemin")).toBe("-100");
+    expect(t.slider.getAttribute("aria-valuenow")).toBe("-50");
+    pointer(t.slider, "pointermove", at(0));
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 1 });
+    pointer(t.slider, "pointermove", at(1));
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 1, brake: 0 });
+    expect(t.box.firstElementChild!.textContent).toBe("THR");
+    expect(t.output.value).toBe("100%");
+    expect(t.onThrottleChange).not.toHaveBeenCalled();
+  });
+
+  it("shows the active host range and keeps afterburner out of the brake readout", () => {
+    const t = mount({ engine: RUNNING, throttle: 0.5 }, true, true);
+    expect(Number(t.slider.style.getPropertyValue("--throttle-value"))).toBeCloseTo(0.6, 9);
+    expect(t.output.value).toBe("50%");
+    t.show({ throttle: 0, brake: 0.75, afterburner: true });
+    expect(Number(t.slider.style.getPropertyValue("--throttle-value"))).toBeCloseTo(0.05, 9);
+    expect(t.output.value).toBe("75%");
+    expect(t.box.dataset.afterburner).toBe("inactive");
+    t.show({ throttle: 0, brake: 0 });
+    expect(t.box.firstElementChild!.textContent).toBe("THR");
+    expect(t.output.value).toBe("0%");
+    expect(t.box.dataset.power).toBe("throttle");
+  });
+
+  it("holds to shut down at the idle detent but cancels that hold when pulled into brakes", () => {
+    const t = mount({ engine: RUNNING }, true, true);
+    pointer(t.slider, "pointerdown", at(0.2));
+    expect(t.box.dataset.hold).toBe("shutdown");
+    pointer(t.slider, "pointermove", at(0.1));
+    expect(t.box.dataset.hold).toBeUndefined();
+    expect(t.onPowerChange.mock.lastCall![0].brake).toBeCloseTo(0.5, 9);
+    vi.advanceTimersByTime(SHUTDOWN_HOLD_MS);
+    expect(t.onShutdown).not.toHaveBeenCalled();
+    pointer(t.slider, "pointerup", at(0.1));
+    t.show({ brake: 0 });
+    pointer(t.slider, "pointerdown", at(0.2));
+    vi.advanceTimersByTime(SHUTDOWN_HOLD_MS);
+    expect(t.onShutdown).toHaveBeenCalledOnce();
+  });
+
+  it("never starts an engine hold while the brake handle is held", () => {
+    const t = mount({ engine: RUNNING, brake: 0.5, keepBrakes: true }, true, true);
+    pointer(t.slider, "pointerdown", at(0.1));
+    vi.advanceTimersByTime(SHUTDOWN_HOLD_MS * 2);
+    expect(t.onShutdown).not.toHaveBeenCalled();
+    expect(t.box.dataset.hold).toBeUndefined();
+    pointer(t.slider, "pointerup", at(0.1));
+    t.show({ engine: STOPPED });
+    key(t.slider, "keydown", " ");
+    expect(t.onStartHold).not.toHaveBeenCalled();
+    expect(t.output.value).toBe("50%");
+    expect(t.slider.getAttribute("aria-valuetext")).toBe("Brakes, 50%. Engine off.");
+  });
+
+  it("applies and releases the brakes with the engine off, then starts from idle", () => {
+    const t = mount({ engine: STOPPED, keepBrakes: true }, true, true);
+    pointer(t.slider, "pointerdown", at(0));
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 1 });
+    expect(t.onStartHold).not.toHaveBeenCalled();
+    pointer(t.slider, "pointerup", at(0));
+    t.show({ brake: 1 });
+    expect(t.box.firstElementChild!.textContent).toBe("BRK");
+    // The throttle range starts the engine at idle and releases the brakes atomically.
+    pointer(t.slider, "pointerdown", at(0.2));
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 0 });
+    expect(t.onStartHold).toHaveBeenLastCalledWith(true);
+    pointer(t.slider, "pointermove", at(0.6));
+    expect(t.onPowerChange.mock.lastCall![0].throttle).toBeCloseTo(0.5, 9);
+    expect(t.onPowerChange.mock.lastCall![0].brake).toBe(0);
+    pointer(t.slider, "pointerup", at(0.6));
+    expect(t.onStartHold).toHaveBeenLastCalledWith(false);
+    t.show({ throttle: 0.5, brake: 0 });
+    expect(t.slider.style.getPropertyValue("--throttle-value")).toBe("0.2");
+    expect(t.output.value).toBe("OFF");
+  });
+
+  it("crosses idle with the keyboard and allows only the brake range while stopped", () => {
+    const t = mount({ engine: RUNNING }, true, true);
+    key(t.slider, "keydown", "PageDown");
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 0.5 });
+    key(t.slider, "keydown", "ArrowUp");
+    expect(t.onPowerChange.mock.lastCall![0].brake).toBeCloseTo(0.45, 9);
+    key(t.slider, "keydown", "PageUp");
+    expect(t.onPowerChange.mock.lastCall![0].throttle).toBeCloseTo(0.0125, 9);
+    key(t.slider, "keydown", "Home");
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 1 });
+    key(t.slider, "keydown", "End");
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 1, brake: 0 });
+    t.show({ engine: STOPPED });
+    key(t.slider, "keydown", "End");
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 0 });
+    key(t.slider, "keydown", "Home");
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 1 });
+  });
+
+  it("springs pointer and keyboard brakes back to idle by default", () => {
+    const t = mount({ engine: RUNNING }, true, true);
+    pointer(t.slider, "pointerdown", at(0));
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 1 });
+    t.show({ brake: 1 });
+    pointer(t.slider, "pointerup", at(0));
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 0 });
+    expect(t.slider.style.getPropertyValue("--throttle-value")).toBe("0.2");
+    expect(t.box.firstElementChild!.textContent).toBe("THR");
+    // A delayed status still showing brakes cannot pull the spring back down.
+    t.show({ brake: 1 });
+    expect(t.output.value).toBe("0%");
+    t.show({ brake: 0 });
+    key(t.slider, "keydown", "Home");
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 1 });
+    key(t.slider, "keyup", "Home");
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 0 });
+  });
+
+  it("keeps brakes on normal pointer and key release only when explicitly enabled", () => {
+    const t = mount({ engine: RUNNING, keepBrakes: true }, true, true);
+    pointer(t.slider, "pointerdown", at(0));
+    t.show({ brake: 1 });
+    pointer(t.slider, "pointerup", at(0));
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 1 });
+    expect(t.output.value).toBe("100%");
+    key(t.slider, "keydown", "ArrowUp");
+    const beforeRelease = t.onPowerChange.mock.lastCall![0];
+    key(t.slider, "keyup", "ArrowUp");
+    expect(t.onPowerChange).toHaveBeenLastCalledWith(beforeRelease);
+    expect(beforeRelease.brake).toBeCloseTo(0.95, 9);
+  });
+
+  it("clears brakes on cancellation, focus loss and explicit release even when retention is enabled", () => {
+    const t = mount({ engine: RUNNING, keepBrakes: true }, true, true);
+    for (const event of ["pointercancel", "lostpointercapture"]) {
+      t.show({ brake: 0 });
+      pointer(t.slider, "pointerdown", at(0));
+      pointer(t.slider, event, at(0));
+      expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 0 });
+    }
+    t.show({ brake: 0 });
+    t.show({ brake: 0.5 });
+    t.slider.dispatchEvent(new FocusEvent("blur"));
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 0 });
+    t.show({ brake: 0 });
+    key(t.slider, "keydown", "Home");
+    t.lever.release();
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 0 });
+  });
+
+  it("releases retained brakes when the setting is turned off", () => {
+    const t = mount({ engine: RUNNING, brake: 0.5, keepBrakes: true }, true, true);
+    t.show({ brake: 0.5, keepBrakes: false });
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0, brake: 0 });
+    expect(t.slider.style.getPropertyValue("--throttle-value")).toBe("0.2");
+    expect(t.box.firstElementChild!.textContent).toBe("THR");
+  });
+
+  it("restores the original throttle when the host switches to another aircraft", () => {
+    const t = mount({ engine: RUNNING, throttle: 0.5 }, true, true);
+    pointer(t.slider, "pointerdown", at(0.6));
+    t.show({ brakeRange: false, throttle: 0.5 });
+    expect(t.box.dataset.brakeRange).toBe("false");
+    expect(t.slider.getAttribute("aria-valuemin")).toBe("0");
+    expect(t.slider.style.getPropertyValue("--throttle-value")).toBe("0.5");
+    expect(t.slider.getAttribute("aria-valuetext")).toBe("50%");
+    key(t.slider, "keydown", "PageUp");
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(0.6);
+    expect(t.onPowerChange).not.toHaveBeenCalled();
+  });
 });
 
 describe("throttle lever", () => {

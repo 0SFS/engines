@@ -6,7 +6,8 @@ import type { EngineRunState } from "./engineControl";
  * gives it a box and says where its input goes; the HUD drives the aircraft
  * directly and the phone sends the same intents over its channel.
  *
- * It is a slider that also starts and stops the engine:
+ * It is a slider that also starts and stops the engine. Hosts may opt into a
+ * combined lever: the upper 80% commands throttle, the lower 20% wheel brakes.
  *
  * - Engine off, it sits at idle and will not move. Press and hold it to start:
  *   the starter turns while it is held, the ring fills as the engine spools,
@@ -31,14 +32,27 @@ export interface ThrottleLeverEngine {
 export interface ThrottleLeverView {
   /** The throttle the aircraft is given, 0 to 1. While the pilot drags, the lever shows the drag instead. */
   throttle: number;
+  /** Wheel brakes, 0 to 1, when the host opts into the combined lever. */
+  brake?: number;
+  /** False temporarily restores an ordinary throttle, for hosts that switch aircraft. */
+  brakeRange?: boolean;
+  /** Keep the selected brakes after pointer/key release; defaults to springing back to idle. */
+  keepBrakes?: boolean;
   /** Null when the host cannot start or stop the engine: the lever is then a plain throttle. */
   engine: ThrottleLeverEngine | null;
   afterburner?: boolean | null;
   disabled?: boolean;
 }
 
+export interface ThrottleBrakeCommand {
+  throttle: number;
+  brake: number;
+}
+
 export interface ThrottleLeverOptions {
   onThrottleChange(value: number): void;
+  /** Opts into an 80% throttle / lower 20% brake lever; receives one atomic command. */
+  onPowerChange?(command: ThrottleBrakeCommand): void;
   /** Held to start: true when the press begins, false when it ends, whether or not the engine ran. */
   onStartHold?(held: boolean): void;
   /** The ring filled at idle. */
@@ -49,7 +63,7 @@ export interface ThrottleLeverOptions {
 
 export interface ThrottleLeverHandle {
   update(view: ThrottleLeverView): void;
-  /** Lets go of whatever the lever holds, as lifting the pointer would. */
+  /** Cancels held input and releases slider brakes, including retained brakes. */
   release(): void;
   destroy(): void;
 }
@@ -60,6 +74,8 @@ export const SHUTDOWN_HOLD_MS = 1500;
 const HOLD_SLOP_PX = 6;
 /** At or below this the lever is at idle. */
 const IDLE = 0.005;
+/** The lower fifth of an opted-in lever applies wheel brakes below throttle idle. */
+const BRAKE_RANGE = 0.2;
 const KEY_STEPS: Readonly<Record<string, number>> = {
   ArrowUp: 0.01, ArrowRight: 0.01, ArrowDown: -0.01, ArrowLeft: -0.01, PageUp: 0.1, PageDown: -0.1,
 };
@@ -90,6 +106,7 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
   slider.tabIndex = 0;
   slider.innerHTML = `
     <span class="flight-throttle__track"><span class="flight-throttle__fill"></span></span>
+    <span class="flight-throttle__idle" aria-hidden="true"></span>
     <span class="flight-throttle__handle">
       <svg class="flight-throttle__ring" viewBox="0 0 36 36" aria-hidden="true">
         <circle class="flight-throttle__ring-back" cx="18" cy="18" r="15.5" />
@@ -106,13 +123,29 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
   let local: number | null = null;
   /** A key's value until the host shows it, so quick presses add up. */
   let keyed: { value: number; at: number } | null = null;
+  /** Keeps a spring release visible while a remote host acknowledges the zero-brake command. */
+  let brakeReleasePending = false;
+  const brakeKeys = new Set<string>();
   let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
   let drawn = "";
 
   const controlsEngine = (): boolean => view.engine !== null && Boolean(options.onStartHold && options.onShutdown);
   const engineState = (): EngineRunState | null => (controlsEngine() ? view.engine!.state : null);
+  const combined = (): boolean => Boolean(options.onPowerChange) && view.brakeRange !== false;
+  const idle = (): number => combined() ? BRAKE_RANGE : 0;
+  const power = (value: number): ThrottleBrakeCommand => !combined()
+    ? { throttle: value, brake: 0 }
+    : value < BRAKE_RANGE
+      ? { throttle: 0, brake: clamp01((BRAKE_RANGE - value) / BRAKE_RANGE) }
+      : { throttle: clamp01((value - BRAKE_RANGE) / (1 - BRAKE_RANGE)), brake: 0 };
+  const position = (value: number): number => combined() && Math.abs(value - BRAKE_RANGE) < 1e-9 ? BRAKE_RANGE : clamp01(value);
+  const viewValue = (): number => {
+    if (!combined()) return clamp01(view.throttle);
+    const brake = clamp01(view.brake ?? 0);
+    return brake > 0 ? BRAKE_RANGE * (1 - brake) : BRAKE_RANGE + clamp01(view.throttle) * (1 - BRAKE_RANGE);
+  };
   const stuck = (): boolean => engineState() === "stopped" && gesture?.kind !== "start";
-  const shown = (): number => clamp01(local ?? (stuck() ? 0 : view.throttle));
+  const shown = (): number => position(local ?? (brakeReleasePending ? idle() : stuck() ? Math.min(idle(), viewValue()) : viewValue()));
 
   const metrics = () => {
     const rect = slider.getBoundingClientRect();
@@ -122,44 +155,56 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
 
   const render = (): void => {
     const value = shown();
-    const percent = Math.round(value * 100);
+    const command = power(value);
+    const braking = command.brake > 0;
+    const percent = Math.round((braking ? command.brake : command.throttle) * 100);
     const state = engineState();
     // Once the engine runs, a hold that started it is just a drag: the ring goes.
     const hold = gesture?.kind === "shutdown" ? "shutdown"
       : gesture?.kind === "start" && state !== "running" ? "start" : null;
     // Held but not yet stepped (paused, say) counts as starting.
     const starting = state === "starting" || (state === "stopped" && hold === "start");
-    const afterburner = view.afterburner === true;
+    const afterburner = view.afterburner === true && !braking;
     const progress = starting ? clamp01(view.engine!.startProgress) : 0;
     const blocked = state !== "running" ? view.engine?.blocked ?? null : null;
     let text: string;
     let title: string;
-    if (state === "stopped" && !hold) {
+    if (braking) {
+      text = `Brakes, ${percent}%${state === "stopped" ? ". Engine off." : ""}`;
+      title = "Wheel brakes. Move up to idle to release the brakes, then farther up for throttle.";
+    } else if (state === "stopped" && !hold) {
       text = `Engine off. Press and hold to start.${blocked ? ` ${blocked}.` : ""}`;
       title = "Engine off. Press and hold the throttle to start the engine, and keep holding until it runs; drag up as you hold to choose the power it starts to.";
     } else if (starting) {
       text = `Starting, ${Math.round(progress * 100)}%. Keep holding.${blocked ? ` ${blocked}.` : ""}`;
       title = "Starting. Keep holding until the engine runs; letting go now abandons the start.";
     } else {
-      text = `${percent}%${afterburner ? ", afterburner active" : ""}`;
-      title = state === "running" && value <= IDLE
+      text = `${combined() ? "Throttle, " : ""}${percent}%${afterburner ? ", afterburner active" : ""}`;
+      title = state === "running" && command.throttle <= IDLE
         ? "Idle. Press and hold the handle until the ring closes to shut the engine down."
-        : "Throttle";
+        : combined() ? "Throttle. The lower 20% of the lever applies wheel brakes." : "Throttle";
     }
     if (blocked) title = `${title} ${blocked}.`;
-    const key = [value, state, hold, afterburner, progress, text, title, view.disabled === true].join("|");
+    const key = [value, state, hold, afterburner, progress, text, title, combined(), view.disabled === true].join("|");
     if (key === drawn) return;
     drawn = key;
     slider.style.setProperty("--throttle-value", String(value));
+    slider.style.setProperty("--throttle-fill-start", String(braking ? value : idle()));
+    slider.style.setProperty("--throttle-fill-size", String(Math.abs(value - idle())));
     box.style.setProperty("--throttle-ring", String(progress));
-    output.value = state === "stopped" && !hold ? "OFF" : `${percent}${afterburner ? "🔥" : "%"}`;
+    label.textContent = braking ? "BRK" : "THR";
+    output.value = state === "stopped" && !hold && !braking ? "OFF" : `${percent}${afterburner ? "🔥" : "%"}`;
     output.setAttribute("aria-label", text);
-    slider.setAttribute("aria-valuenow", String(percent));
+    slider.setAttribute("aria-label", braking ? "Brakes" : "Throttle");
+    slider.setAttribute("aria-valuemin", combined() ? "-100" : "0");
+    slider.setAttribute("aria-valuenow", String(braking ? -percent : percent));
     slider.setAttribute("aria-valuetext", text);
     slider.setAttribute("aria-disabled", String(view.disabled === true));
     slider.tabIndex = view.disabled ? -1 : 0;
     box.title = title;
     box.dataset.afterburner = afterburner ? "active" : "inactive";
+    box.dataset.brakeRange = String(combined());
+    box.dataset.power = braking ? "brake" : "throttle";
     if (state) box.dataset.engine = state;
     else delete box.dataset.engine;
     if (hold) box.dataset.hold = hold;
@@ -167,10 +212,12 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
   };
 
   const send = (value: number): void => {
-    const next = clamp01(value);
+    const next = position(value);
+    brakeReleasePending = false;
     if (local !== null) local = next;
     keyed = { value: next, at: performance.now() };
-    options.onThrottleChange(next);
+    if (combined()) options.onPowerChange!(power(next));
+    else options.onThrottleChange(next);
   };
 
   const cancelShutdown = (): void => {
@@ -181,13 +228,15 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
   /** Begins what a press on the handle means now: a start, a shutdown ring, or nothing. */
   const beginHold = (pointerId: number | "key", originY: number): boolean => {
     const state = engineState();
-    if (state === "stopped") {
-      gesture = { kind: "start", pointerId, originY, originValue: 0 };
-      local = 0;
+    if (state === "stopped" && (pointerId !== "key" || power(shown()).brake === 0)) {
+      gesture = { kind: "start", pointerId, originY, originValue: idle() };
+      local = idle();
+      if (combined() && clamp01(view.brake ?? 0) > 0) send(idle());
       options.onStartHold?.(true);
       return true;
     }
-    if (state === "running" && shown() <= IDLE) {
+    const command = power(shown());
+    if (state === "running" && command.throttle <= IDLE && command.brake === 0) {
       gesture = { kind: "shutdown", pointerId, originY };
       shutdownTimer = setTimeout(() => {
         shutdownTimer = undefined;
@@ -201,9 +250,19 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
     return false;
   };
 
-  const end = (): void => {
-    if (!gesture) return;
-    const started = gesture.kind === "start";
+  const releaseBrake = (force: boolean): void => {
+    if (!combined() || (!force && view.keepBrakes)) return;
+    const commanded = local ?? (keyed && performance.now() - keyed.at < 250 ? keyed.value : shown());
+    if (power(commanded).brake <= 0) return;
+    send(idle());
+    brakeReleasePending = true;
+  };
+
+  const end = (forceBrakeRelease = false): void => {
+    if (!gesture && !forceBrakeRelease) return;
+    const started = gesture?.kind === "start";
+    releaseBrake(forceBrakeRelease);
+    brakeKeys.clear();
     cancelShutdown();
     gesture = null;
     local = null;
@@ -222,8 +281,10 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
     const { bottom, travel, reach } = metrics();
     const value = shown();
     const onHandle = Math.abs(event.clientY - (bottom - value * travel)) <= reach;
-    // Engine off, a press anywhere on the lever starts it; running, only the handle at idle is a hold.
-    const holding = (onHandle || engineState() === "stopped") && beginHold(event.pointerId, event.clientY);
+    const requested = clamp01((bottom - event.clientY) / travel);
+    // The brake range always drags; engine holds belong to idle and the throttle range.
+    const inBrakeRange = combined() && requested < idle();
+    const holding = !inBrakeRange && (onHandle || engineState() === "stopped") && beginHold(event.pointerId, event.clientY);
     if (holding) {
       render();
       return;
@@ -232,7 +293,7 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
       gesture = { kind: "drag", pointerId: event.pointerId, originY: event.clientY, originValue: value };
       local = value;
     } else {
-      const jump = clamp01((bottom - event.clientY) / travel);
+      const jump = stuck() ? Math.min(idle(), requested) : requested;
       gesture = { kind: "drag", pointerId: event.pointerId, originY: event.clientY, originValue: jump };
       local = jump;
       send(jump);
@@ -250,13 +311,14 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
       gesture = { kind: "drag", pointerId: gesture.pointerId, originY: gesture.originY, originValue: shown() };
       local = shown();
     }
-    const next = clamp01(gesture.originValue + rise / metrics().travel);
+    const requested = clamp01(gesture.originValue + rise / metrics().travel);
+    const next = stuck() ? Math.min(idle(), requested) : requested;
     if (next !== local) send(next);
     render();
   };
 
   const onPointerEnd = (event: PointerEvent): void => {
-    if (gesture?.pointerId === event.pointerId) end();
+    if (gesture?.pointerId === event.pointerId) end(event.type !== "pointerup");
   };
 
   const onKeyDown = (event: KeyboardEvent): void => {
@@ -271,21 +333,30 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
     if (step === undefined && absolute === null) return;
     event.preventDefault();
     // Engine off, the lever stays at idle unless it is held to start.
-    if (stuck()) return;
+    if (stuck() && !combined()) return;
     if (gesture?.kind === "shutdown") {
       cancelShutdown();
       gesture = null;
     }
     const base = keyed && performance.now() - keyed.at < 250 ? keyed.value : shown();
-    send(absolute ?? base + step!);
+    const requested = clamp01(absolute ?? base + step!);
+    const next = stuck() ? Math.min(idle(), requested) : requested;
+    send(next);
+    if (combined() && power(next).brake > 0) brakeKeys.add(event.key);
+    else brakeKeys.clear();
     render();
   };
 
   const onKeyUp = (event: KeyboardEvent): void => {
+    if (brakeKeys.delete(event.key) && brakeKeys.size === 0) {
+      releaseBrake(false);
+      render();
+    }
     if ((event.key === " " || event.key === "Enter") && gesture?.pointerId === "key") end();
   };
 
-  const onVisibilityChange = (): void => { if (document.hidden) end(); };
+  const onBlur = (): void => end(true);
+  const onVisibilityChange = (): void => { if (document.hidden) end(true); };
   // A start is held for as long as the engine takes to spool: a long press must not open a menu.
   const onContextMenu = (event: Event): void => event.preventDefault();
 
@@ -296,24 +367,34 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
   slider.addEventListener("lostpointercapture", onPointerEnd);
   slider.addEventListener("keydown", onKeyDown);
   slider.addEventListener("keyup", onKeyUp);
-  slider.addEventListener("blur", end);
+  slider.addEventListener("blur", onBlur);
   slider.addEventListener("contextmenu", onContextMenu);
-  window.addEventListener("blur", end);
+  window.addEventListener("blur", onBlur);
   document.addEventListener("visibilitychange", onVisibilityChange);
   render();
 
   return {
     update(next) {
+      const wasCombined = combined();
+      const keptBrakes = view.keepBrakes === true;
       view = next;
-      if (keyed && Math.abs(clamp01(next.throttle) - keyed.value) < 0.005) keyed = null;
+      if (wasCombined !== combined()) {
+        keyed = null;
+        brakeKeys.clear();
+        brakeReleasePending = false;
+        end();
+      }
+      if (keptBrakes && !view.keepBrakes) end(true);
+      if (clamp01(view.brake ?? 0) === 0 || view.throttle > 0) brakeReleasePending = false;
+      if (keyed && Math.abs(viewValue() - keyed.value) < 0.005) keyed = null;
       // Nothing to hold once the engine is no longer where the hold began.
       if (gesture?.kind === "shutdown" && engineState() !== "running") end();
-      if (view.disabled) end();
+      if (view.disabled) end(true);
       render();
     },
-    release: end,
+    release: () => end(true),
     destroy() {
-      end();
+      end(true);
       slider.removeEventListener("pointerdown", onPointerDown);
       slider.removeEventListener("pointermove", onPointerMove);
       slider.removeEventListener("pointerup", onPointerEnd);
@@ -321,14 +402,16 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
       slider.removeEventListener("lostpointercapture", onPointerEnd);
       slider.removeEventListener("keydown", onKeyDown);
       slider.removeEventListener("keyup", onKeyUp);
-      slider.removeEventListener("blur", end);
+      slider.removeEventListener("blur", onBlur);
       slider.removeEventListener("contextmenu", onContextMenu);
-      window.removeEventListener("blur", end);
+      window.removeEventListener("blur", onBlur);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       box.replaceChildren();
       box.removeAttribute("title");
       delete box.dataset.engine;
       delete box.dataset.hold;
+      delete box.dataset.brakeRange;
+      delete box.dataset.power;
     },
   };
 }
