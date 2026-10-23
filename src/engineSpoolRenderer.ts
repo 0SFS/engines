@@ -170,6 +170,8 @@ async function gpuPainter(canvas: HTMLCanvasElement, device: GPUDevice): Promise
         pass.draw(3);
         pass.end();
         device.queue.submit([encoder.finish()]);
+        // Its picture lasts only this task: a copy of the page, such as a cockpit screen's, takes it now.
+        canvas.dispatchEvent(new Event(CANVAS_DRAWN_EVENT, { bubbles: true }));
       },
       destroy() { uniforms.destroy(); context.unconfigure(); },
     };
@@ -179,6 +181,9 @@ async function gpuPainter(canvas: HTMLCanvasElement, device: GPUDevice): Promise
     throw error;
   }
 }
+
+/** FOSS Earth's `noteCanvasDrawn` event (@foss-earth/ui/browser), by name: this package does not depend on it. */
+const CANVAS_DRAWN_EVENT = "foss-earth:canvas-drawn";
 
 function glPainter(canvas: HTMLCanvasElement, kind: "webgl2" | "webgl1", onLoss: () => void): Painter {
   const gl = canvas.getContext(kind === "webgl2" ? "webgl2" : "webgl", {
