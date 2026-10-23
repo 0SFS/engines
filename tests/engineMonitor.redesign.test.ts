@@ -70,6 +70,22 @@ function mount(options: { values?: Record<string, number>; layout?: EngineMonito
 }
 
 describe("variable-driven engine Live data", () => {
+  it("puts a reset on a display unit away from the catalogue's, which returns it", () => {
+    const h = mount();
+    const unit = () => [...h.view.element.querySelectorAll<HTMLSelectElement>("[data-options-variable] select")].find(select => select.options.length > 1)!;
+    const reset = () => unit().parentElement!.querySelector<HTMLButtonElement>(".foss-earth-parameter__reset");
+    const original = unit().value;
+    expect(reset()).toBeNull();
+    const other = [...unit().options].find(option => option.value !== original)!.value;
+    unit().value = other;
+    unit().dispatchEvent(new Event("change"));
+    expect(unit().value).toBe(other);
+    expect(reset()!.title).toContain(` display unit to the default: ${original}`);
+    reset()!.click();
+    expect(unit().value).toBe(original);
+    expect(reset()).toBeNull();
+  });
+
   it("keeps explanations behind click help and plot controls closed without changing the variable presentation", () => {
     const h = mount();
     const beforeLayout = JSON.stringify(h.layout);

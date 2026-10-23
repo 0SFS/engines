@@ -1,4 +1,4 @@
-import { createHelpTooltip } from 'foss-earth/shell';
+import { attachResetButton, createHelpTooltip } from 'foss-earth/shell';
 import { createEngineHistory, engineHistoryCsv, engineHistoryPlot, type EngineHistory, type EngineHistoryFrame } from './engineHistory';
 import { engineVariableInUnit, type EngineVariable } from './engineVariables';
 import { enginePlotGroups, engineVariablePresentation, setEngineVariablePresentation, separateEngineVariable,
@@ -119,13 +119,21 @@ export function createEngineLiveData(catalog: readonly EngineVariable[], paramet
       const label = node('label', '', 'Display unit '), select = node('select'); select.setAttribute('aria-label', `${v.title} display unit`);
       for (const unit of v.units) { const option = node('option', '', unit.unit); option.value = unit.unit; select.append(option); }
       select.value = v.unit ?? '';
-      select.addEventListener('change', () => {
+      const change = (unit: string) => {
         if (disposed) return;
-        changeEngineVariableUnit(layout, v, select.value); saveAndBuild(v.id);
+        changeEngineVariableUnit(layout, v, unit); saveAndBuild(v.id);
         const replacement = [...flow.querySelectorAll<HTMLDetailsElement>('[data-options-variable]')].find(el => el.dataset.optionsVariable === v.id);
         if (replacement) { replacement.open = true; replacement.querySelector<HTMLSelectElement>('select')?.focus(); }
-      });
+      };
+      select.addEventListener('change', () => change(select.value));
       label.append(select); details.append(label);
+      // Away from the catalogue's unit, a reset returns it; changing the unit draws the panel again, with or without one.
+      const defaultUnit = byId.get(v.id)?.unit ?? v.units[0].unit;
+      if (select.value !== defaultUnit) attachResetButton(document, select, {
+        label: () => `Reset ${v.title} display unit to the default: ${defaultUnit}`,
+        shown: () => true,
+        reset: () => change(defaultUnit),
+      });
     }
     if (hasRange) {
       let rangeControl: ReturnType<typeof createEnginePlotRangeControl> | null = null;
