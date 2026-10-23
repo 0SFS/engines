@@ -284,6 +284,16 @@ export function createEngineSummary(): EngineSummary {
     packRingTriplet(radius, n1Value, n1Label, n1Unit, SPOOL_N1_VALUE_ANGLE, 1, -1);
     packRingTriplet(radius, thrustValue, thrustLabel, thrustUnit, SPOOL_THRUST_VALUE_ANGLE, -1, 1);
   };
+  // The packing follows only the ring's size and its readouts' boxes. Where the
+  // browser reports when those change, it packs again then, after a layout it
+  // already did, rather than measuring after every new digit, which forces one.
+  const ringResize = typeof ResizeObserver === "function" ? new ResizeObserver(() => {
+    spoolRingPacked = false;
+    packSpoolRingOnce();
+  }) : null;
+  for (const node of [spools, n1Value, n1Label, n1Unit, thrustValue, thrustLabel, thrustUnit]) {
+    ringResize?.observe(node, { box: "border-box" });
+  }
 
   return {
     diagram,
@@ -312,7 +322,7 @@ export function createEngineSummary(): EngineSummary {
           + (view.thrustLbf === null ? "" : ` · thrust ${Math.round(view.thrustLbf)} lbf`)
           + " · Orb motion: scaled model percent speed, not physical shaft RPM. " + engineRotorDescription(view)
           + (view.rotorMotionDescription ? ` ${view.rotorMotionDescription}` : ""));
-        if (n1Changed || thrustChanged) spoolRingPacked = false;
+        if (!ringResize && (n1Changed || thrustChanged)) spoolRingPacked = false;
         packSpoolRingOnce();
       } else if (piston) {
         updateText(rpmValue, view.rpm === null ? "—" : Math.round(view.rpm).toString());

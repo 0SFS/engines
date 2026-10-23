@@ -41,6 +41,7 @@ afterEach(() => {
   for (const observer of observers.splice(0)) observer.disconnect();
   for (const root of roots.splice(0)) root.remove();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("engine summary DOM updates", () => {
@@ -87,6 +88,32 @@ describe("engine summary DOM updates", () => {
     summary.render({ ...changed, simTimeS: 2 }, "lb/h");
     expect(observer.takeRecords()).toHaveLength(0);
     expect(measure).not.toHaveBeenCalled();
+  });
+
+  it("with a resize observer, packs the ring when its boxes change size, not for each new digit", () => {
+    let resized!: () => void;
+    const observed: Element[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resized = callback; }
+      observe(node: Element) { observed.push(node); }
+      disconnect() {}
+    });
+    const { summary, root } = mount(turbine);
+    const label = root.querySelector<HTMLElement>(".flight-engine__spool-thrust .flight-engine__spool-label")!;
+    const value = root.querySelector<HTMLElement>(".flight-engine__spool-thrust .flight-engine__spool-value")!;
+    expect(observed).toEqual(expect.arrayContaining([summary.spools, value, label]));
+    const packed = label.style.transform;
+    const measure = vi.spyOn(window, "getComputedStyle");
+    summary.render({ ...turbine, n1Pct: 98, thrustLbf: 9998 }, "lb/h");
+    expect(value.textContent).toBe("9998");
+    expect(measure).not.toHaveBeenCalled();
+    // A wider value is packed once the browser reports its new size.
+    summary.render({ ...turbine, thrustLbf: 10000 }, "lb/h");
+    expect(measure).not.toHaveBeenCalled();
+    expect(label.style.transform).toBe(packed);
+    resized();
+    expect(measure).toHaveBeenCalled();
+    expect(label.style.transform).not.toBe(packed);
   });
 
   it("updates aircraft, phase and flow units once when they change", () => {
