@@ -237,6 +237,85 @@ describe("combined throttle and brake lever", () => {
   });
 });
 
+describe("afterburner detent", () => {
+  /** A host that shows what the lever sends, as the HUD does a frame later. */
+  function host(view: Partial<ThrottleLeverView>, combined = false) {
+    const t = mount({ engine: RUNNING, afterburnerDetent: 0.99, ...view }, true, combined);
+    t.onThrottleChange.mockImplementation(throttle => t.show({ throttle }));
+    t.onPowerChange.mockImplementation(command => t.show(command));
+    return t;
+  }
+
+  it("stops one drag at the detent, and a second push from there lights the afterburner", () => {
+    const t = host({ throttle: 0.5 });
+    pointer(t.slider, "pointerdown", at(0.5));
+    pointer(t.slider, "pointermove", at(1));
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(0.99);
+    expect(t.box.title).toBe("Afterburner detent. Let go and push again to light the afterburner.");
+    pointer(t.slider, "pointerup", at(1));
+    pointer(t.slider, "pointerdown", at(0.99));
+    pointer(t.slider, "pointermove", at(1));
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(1);
+    // Coming out is free, and so is going back within the press that started there.
+    pointer(t.slider, "pointermove", at(0.4));
+    expect(t.onThrottleChange.mock.lastCall![0]).toBeCloseTo(0.4, 9);
+    pointer(t.slider, "pointermove", at(1));
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(1);
+  });
+
+  it("stops a tap on the track at the detent; the handle there then pushes through", () => {
+    const t = host({ throttle: 0.5 });
+    pointer(t.slider, "pointerdown", at(1));
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(0.99);
+    pointer(t.slider, "pointerup", at(1));
+    pointer(t.slider, "pointerdown", at(1));
+    pointer(t.slider, "pointermove", at(1.05));
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(1);
+  });
+
+  it("stops a held key at the detent, and passes the next press", () => {
+    const t = host({ throttle: 0.95 });
+    key(t.slider, "keydown", "ArrowUp");
+    for (let repeat = 0; repeat < 10; repeat++) key(t.slider, "keydown", "ArrowUp", true);
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(0.99);
+    key(t.slider, "keyup", "ArrowUp");
+    key(t.slider, "keydown", "ArrowUp");
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(1);
+    key(t.slider, "keydown", "Home");
+    key(t.slider, "keydown", "End");
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(0.99);
+    key(t.slider, "keydown", "End");
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(1);
+  });
+
+  it("stops at the detent itself on the combined lever, not a rounding above it", () => {
+    const t = host({ throttle: 0, brake: 0.5 }, true);
+    pointer(t.slider, "pointerdown", at(0.1));
+    pointer(t.slider, "pointermove", at(1));
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 0.99, brake: 0 });
+    expect(t.output.value).toBe("99%");
+    pointer(t.slider, "pointerup", at(1));
+    pointer(t.slider, "pointerdown", at(0.2 + 0.99 * 0.8));
+    pointer(t.slider, "pointermove", at(1));
+    expect(t.onPowerChange).toHaveBeenLastCalledWith({ throttle: 1, brake: 0 });
+  });
+
+  it("stops the power chosen while holding to start at the detent", () => {
+    const t = host({ engine: STOPPED });
+    pointer(t.slider, "pointerdown", at(0));
+    t.show({ engine: { state: "starting", startProgress: 0.5 } });
+    pointer(t.slider, "pointermove", at(1));
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(0.99);
+  });
+
+  it("lets one drag through without a detent", () => {
+    const t = host({ throttle: 0.5, afterburnerDetent: null });
+    pointer(t.slider, "pointerdown", at(0.5));
+    pointer(t.slider, "pointermove", at(1));
+    expect(t.onThrottleChange).toHaveBeenLastCalledWith(1);
+  });
+});
+
 describe("throttle lever", () => {
   it("keeps command and actual throttle separate without sending input for telemetry", () => {
     const t = mount({ throttle: .8, actualThrottle: .2, engine: RUNNING });

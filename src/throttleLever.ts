@@ -16,6 +16,9 @@ import type { EngineRunState } from "./engineControl";
  * - Engine running, it is an ordinary throttle. Press and hold its handle at
  *   idle without moving and a ring fills around it; when it closes, the engine
  *   shuts down. Moving away first cancels the ring and drags the lever.
+ * - With an afterburner detent, one press stops there: a drag, a tap on the
+ *   track or a held key that starts below it goes no farther. Let go and push
+ *   again from the detent to light the afterburner. Coming back down is free.
  *
  * Keyboard: the arrow, Page and Home/End keys move it, and holding Space or
  * Enter does what holding the pointer on the handle does.
@@ -45,6 +48,8 @@ export interface ThrottleLeverView {
   /** Null when the host cannot start or stop the engine: the lever is then a plain throttle. */
   engine: ThrottleLeverEngine | null;
   afterburner?: boolean | null;
+  /** The throttle above which the afterburner lights. A press that starts below it stops there; null lets one press pass. */
+  afterburnerDetent?: number | null;
   disabled?: boolean;
 }
 
@@ -85,7 +90,7 @@ const KEY_STEPS: Readonly<Record<string, number>> = {
 };
 
 type Gesture =
-  | { kind: "start" | "drag"; pointerId: number | "key"; originY: number; originValue: number }
+  | { kind: "start" | "drag"; pointerId: number | "key"; originY: number; originValue: number; stopsAtDetent: boolean }
   | { kind: "shutdown"; pointerId: number | "key"; originY: number }
   | { kind: "done"; pointerId: number | "key" };
 
@@ -137,6 +142,8 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
   let keyed: { value: number; at: number } | null = null;
   /** Keeps a spring release visible while a remote host acknowledges the zero-brake command. */
   let brakeReleasePending = false;
+  /** Whether the held key began below the afterburner detent; null until a key moves the lever. */
+  let keyStopsAtDetent: boolean | null = null;
   const brakeKeys = new Set<string>();
   let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
   let drawn = "";
@@ -145,11 +152,28 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
   const engineState = (): EngineRunState | null => (controlsEngine() ? view.engine!.state : null);
   const combined = (): boolean => Boolean(options.onPowerChange) && view.brakeRange !== false;
   const idle = (): number => combined() ? BRAKE_RANGE : 0;
-  const power = (value: number): ThrottleBrakeCommand => !combined()
-    ? { throttle: value, brake: 0 }
-    : value < BRAKE_RANGE
-      ? { throttle: 0, brake: clamp01((BRAKE_RANGE - value) / BRAKE_RANGE) }
-      : { throttle: clamp01((value - BRAKE_RANGE) / (1 - BRAKE_RANGE)), brake: 0 };
+  const detent = (): number | null => {
+    const value = view.afterburnerDetent;
+    return value === null || value === undefined || !Number.isFinite(value) ? null : clamp01(value);
+  };
+  const power = (value: number): ThrottleBrakeCommand => {
+    if (combined() && value < BRAKE_RANGE) return { throttle: 0, brake: clamp01((BRAKE_RANGE - value) / BRAKE_RANGE) };
+    const throttle = combined() ? clamp01((value - BRAKE_RANGE) / (1 - BRAKE_RANGE)) : value;
+    // The detent's lever position converts back to the detent, not a rounding above it that lights the afterburner.
+    const stop = detent();
+    return { throttle: stop !== null && Math.abs(throttle - stop) < 1e-9 ? stop : throttle, brake: 0 };
+  };
+  /** Whether a press starting at this lever position stops at the afterburner detent. */
+  const belowDetent = (value: number): boolean => {
+    const stop = detent();
+    return stop !== null && power(value).throttle < stop;
+  };
+  /** Holds a press that started below the detent there; one that started at or above it is free. */
+  const limit = (value: number, stopsAtDetent: boolean): number => {
+    const stop = detent();
+    if (!stopsAtDetent || stop === null) return value;
+    return Math.min(value, combined() ? BRAKE_RANGE + stop * (1 - BRAKE_RANGE) : stop);
+  };
   const position = (value: number): number => combined() && Math.abs(value - BRAKE_RANGE) < 1e-9 ? BRAKE_RANGE : clamp01(value);
   const viewValue = (): number => {
     if (!combined()) return clamp01(view.throttle);
@@ -202,6 +226,7 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
       text = `${combined() ? "Throttle, " : ""}${percent}%${afterburner ? ", afterburner active" : ""}`;
       title = state === "running" && command.throttle <= IDLE
         ? "Idle. Press and hold the handle until the ring closes to shut the engine down."
+        : command.throttle === detent() ? "Afterburner detent. Let go and push again to light the afterburner."
         : combined() ? "Throttle. The lower 20% of the lever applies wheel brakes." : "Throttle";
     }
     if (blocked) title = `${title} ${blocked}.`;
@@ -257,7 +282,7 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
   const beginHold = (pointerId: number | "key", originY: number): boolean => {
     const state = engineState();
     if (state === "stopped" && (pointerId !== "key" || power(shown()).brake === 0)) {
-      gesture = { kind: "start", pointerId, originY, originValue: idle() };
+      gesture = { kind: "start", pointerId, originY, originValue: idle(), stopsAtDetent: belowDetent(idle()) };
       local = idle();
       if (combined() && clamp01(view.brake ?? 0) > 0) send(idle());
       options.onStartHold?.(true);
@@ -317,12 +342,13 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
       render();
       return;
     }
+    const stopsAtDetent = belowDetent(value);
     if (onHandle) {
-      gesture = { kind: "drag", pointerId: event.pointerId, originY: event.clientY, originValue: value };
+      gesture = { kind: "drag", pointerId: event.pointerId, originY: event.clientY, originValue: value, stopsAtDetent };
       local = value;
     } else {
-      const jump = stuck() ? Math.min(idle(), requested) : requested;
-      gesture = { kind: "drag", pointerId: event.pointerId, originY: event.clientY, originValue: jump };
+      const jump = stuck() ? Math.min(idle(), requested) : limit(requested, stopsAtDetent);
+      gesture = { kind: "drag", pointerId: event.pointerId, originY: event.clientY, originValue: jump, stopsAtDetent };
       local = jump;
       send(jump);
     }
@@ -336,11 +362,11 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
     if (gesture.kind === "shutdown") {
       if (Math.abs(rise) <= HOLD_SLOP_PX) return;
       cancelShutdown();
-      gesture = { kind: "drag", pointerId: gesture.pointerId, originY: gesture.originY, originValue: shown() };
+      gesture = { kind: "drag", pointerId: gesture.pointerId, originY: gesture.originY, originValue: shown(), stopsAtDetent: belowDetent(shown()) };
       local = shown();
     }
     const requested = clamp01(gesture.originValue + rise / metrics().travel);
-    const next = stuck() ? Math.min(idle(), requested) : requested;
+    const next = stuck() ? Math.min(idle(), requested) : limit(requested, gesture.stopsAtDetent);
     if (next !== local) send(next);
     render();
   };
@@ -367,8 +393,10 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
       gesture = null;
     }
     const base = keyed && performance.now() - keyed.at < 250 ? keyed.value : shown();
+    // Each press is one push; its auto-repeats continue it.
+    if (!event.repeat || keyStopsAtDetent === null) keyStopsAtDetent = belowDetent(base);
     const requested = clamp01(absolute ?? base + step!);
-    const next = stuck() ? Math.min(idle(), requested) : requested;
+    const next = stuck() ? Math.min(idle(), requested) : limit(requested, keyStopsAtDetent);
     send(next);
     if (combined() && power(next).brake > 0) brakeKeys.add(event.key);
     else brakeKeys.clear();
