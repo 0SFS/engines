@@ -238,6 +238,41 @@ describe("combined throttle and brake lever", () => {
 });
 
 describe("throttle lever", () => {
+  it("keeps command and actual throttle separate without sending input for telemetry", () => {
+    const t = mount({ throttle: .8, actualThrottle: .2, engine: RUNNING });
+    const marker = t.slider.querySelector<HTMLElement>(".flight-throttle__actual")!;
+    expect(marker.hidden).toBe(false);
+    expect(t.slider.style.getPropertyValue("--throttle-value")).toBe("0.8");
+    expect(t.slider.style.getPropertyValue("--throttle-actual")).toBe("0.2");
+    expect(t.slider.getAttribute("aria-valuetext")).toContain("80% commanded throttle; 20% actual throttle");
+    const observer = new MutationObserver(() => {});
+    observer.observe(t.box, { subtree: true, attributes: true, childList: true, characterData: true });
+    t.show({ actualThrottle: .6 });
+    const records = observer.takeRecords();
+    expect(records.some(record => record.type === "childList" || record.type === "characterData")).toBe(false);
+    expect(records.some(record => record.attributeName === "aria-valuenow")).toBe(false);
+    t.show({ actualThrottle: .6 });
+    expect(observer.takeRecords()).toHaveLength(0);
+    observer.disconnect();
+    expect(t.slider.style.getPropertyValue("--throttle-value")).toBe("0.8");
+    expect(t.slider.style.getPropertyValue("--throttle-actual")).toBe("0.6");
+    expect(t.onThrottleChange).not.toHaveBeenCalled();
+    expect(t.onPowerChange).not.toHaveBeenCalled();
+    t.show({ actualThrottle: .8 });
+    expect(marker.hidden).toBe(true);
+    t.show({ actualThrottle: undefined });
+    expect(marker.hidden).toBe(true);
+    expect(t.slider.getAttribute("aria-valuetext")).toBe("80%");
+  });
+
+  it("maps actual brake travel into the lower fifth without moving the commanded handle", () => {
+    const t = mount({ throttle: 0, brake: .75, actualBrake: .25, engine: RUNNING }, true, true);
+    expect(Number(t.slider.style.getPropertyValue("--throttle-value"))).toBeCloseTo(.05);
+    expect(Number(t.slider.style.getPropertyValue("--throttle-actual"))).toBeCloseTo(.15);
+    expect(t.slider.getAttribute("aria-valuetext")).toContain("75% commanded brakes; 25% actual brakes");
+    expect(t.onPowerChange).not.toHaveBeenCalled();
+  });
+
   it("is a plain accessible throttle for a host that cannot start or stop the engine", () => {
     const t = mount({ throttle: 0.5, engine: RUNNING }, false);
     expect(t.slider.getAttribute("role")).toBe("slider");

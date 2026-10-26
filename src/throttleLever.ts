@@ -32,8 +32,12 @@ export interface ThrottleLeverEngine {
 export interface ThrottleLeverView {
   /** The throttle the aircraft is given, 0 to 1. While the pilot drags, the lever shows the drag instead. */
   throttle: number;
+  /** Physical throttle position, when the aircraft reports one; never engine speed. */
+  actualThrottle?: number;
   /** Wheel brakes, 0 to 1, when the host opts into the combined lever. */
   brake?: number;
+  /** Physical wheel-brake actuator position, when available. */
+  actualBrake?: number;
   /** False temporarily restores an ordinary throttle, for hosts that switch aircraft. */
   brakeRange?: boolean;
   /** Keep the selected brakes after pointer/key release; defaults to springing back to idle. */
@@ -86,6 +90,12 @@ type Gesture =
   | { kind: "done"; pointerId: number | "key" };
 
 const clamp01 = (value: number): number => Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
+const setAttribute = (element: Element, name: string, value: string): void => {
+  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+};
+const setStyle = (element: HTMLElement, name: string, value: string): void => {
+  if (element.style.getPropertyValue(name) !== value) element.style.setProperty(name, value);
+};
 
 export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOptions): ThrottleLeverHandle {
   const holdMs = options.shutdownHoldMs ?? SHUTDOWN_HOLD_MS;
@@ -107,6 +117,7 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
   slider.innerHTML = `
     <span class="flight-throttle__track"><span class="flight-throttle__fill"></span></span>
     <span class="flight-throttle__idle" aria-hidden="true"></span>
+    <span class="flight-throttle__actual" aria-hidden="true" hidden></span>
     <span class="flight-throttle__handle">
       <svg class="flight-throttle__ring" viewBox="0 0 36 36" aria-hidden="true">
         <circle class="flight-throttle__ring-back" cx="18" cy="18" r="15.5" />
@@ -114,6 +125,7 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
       </svg>
     </span>`;
   const handle = slider.querySelector<HTMLElement>(".flight-throttle__handle")!;
+  const actualMarker = slider.querySelector<HTMLElement>(".flight-throttle__actual")!;
   box.replaceChildren(label, output, slider);
   box.style.setProperty("--throttle-hold-ms", `${holdMs}ms`);
 
@@ -167,6 +179,14 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
     const afterburner = view.afterburner === true && !braking;
     const progress = starting ? clamp01(view.engine!.startProgress) : 0;
     const blocked = state !== "running" ? view.engine?.blocked ?? null : null;
+    const knownThrottle = Number.isFinite(view.actualThrottle);
+    const knownBrake = combined() && Number.isFinite(view.actualBrake);
+    const actualBraking = knownBrake && view.actualBrake! > 0;
+    const actual = actualBraking ? clamp01(view.actualBrake!) : knownThrottle ? clamp01(view.actualThrottle!) : knownBrake ? 0 : undefined;
+    const actualPosition = actual === undefined ? undefined : actualBraking ? BRAKE_RANGE * (1 - actual)
+      : combined() ? BRAKE_RANGE + actual * (1 - BRAKE_RANGE) : actual;
+    const actualPercent = actual === undefined ? undefined : Math.round(actual * 100);
+    const showActual = actual !== undefined && (actualBraking !== braking || actualPercent !== percent);
     let text: string;
     let title: string;
     if (braking) {
@@ -185,30 +205,38 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
         : combined() ? "Throttle. The lower 20% of the lever applies wheel brakes." : "Throttle";
     }
     if (blocked) title = `${title} ${blocked}.`;
-    const key = [value, state, hold, afterburner, progress, text, title, combined(), view.disabled === true].join("|");
+    if (actual !== undefined) {
+      text = `${text}; ${percent}% commanded ${braking ? "brakes" : "throttle"}; ${actualPercent}% actual ${actualBraking ? "brakes" : "throttle"}`;
+      title = `${title} ${percent}% commanded; ${actualPercent}% actual ${actualBraking ? "brakes" : "throttle"}. Round handle: command. White I-beam: actual position.`;
+    }
+    const key = [value, actualPosition, showActual, state, hold, afterburner, progress, text, title, combined(), view.disabled === true].join("|");
     if (key === drawn) return;
     drawn = key;
-    slider.style.setProperty("--throttle-value", String(value));
-    slider.style.setProperty("--throttle-fill-start", String(braking ? value : idle()));
-    slider.style.setProperty("--throttle-fill-size", String(Math.abs(value - idle())));
-    box.style.setProperty("--throttle-ring", String(progress));
-    label.textContent = braking ? "BRK" : "THR";
-    output.value = state === "stopped" && !hold && !braking ? "OFF" : `${percent}${afterburner ? "🔥" : "%"}`;
-    output.setAttribute("aria-label", text);
-    slider.setAttribute("aria-label", braking ? "Brakes" : "Throttle");
-    slider.setAttribute("aria-valuemin", combined() ? "-100" : "0");
-    slider.setAttribute("aria-valuenow", String(braking ? -percent : percent));
-    slider.setAttribute("aria-valuetext", text);
-    slider.setAttribute("aria-disabled", String(view.disabled === true));
-    slider.tabIndex = view.disabled ? -1 : 0;
-    box.title = title;
-    box.dataset.afterburner = afterburner ? "active" : "inactive";
-    box.dataset.brakeRange = String(combined());
-    box.dataset.power = braking ? "brake" : "throttle";
-    if (state) box.dataset.engine = state;
-    else delete box.dataset.engine;
-    if (hold) box.dataset.hold = hold;
-    else delete box.dataset.hold;
+    setStyle(slider, "--throttle-value", String(value));
+    setStyle(slider, "--throttle-fill-start", String(braking ? value : idle()));
+    setStyle(slider, "--throttle-fill-size", String(Math.abs(value - idle())));
+    if (actualMarker.hidden === showActual) actualMarker.hidden = !showActual;
+    if (showActual) setStyle(slider, "--throttle-actual", String(actualPosition));
+    setStyle(box, "--throttle-ring", String(progress));
+    const nextLabel = braking ? "BRK" : "THR";
+    if (label.textContent !== nextLabel) label.textContent = nextLabel;
+    const nextOutput = state === "stopped" && !hold && !braking ? "OFF" : `${percent}${afterburner ? "🔥" : "%"}`;
+    if (output.value !== nextOutput) output.value = nextOutput;
+    setAttribute(output, "aria-label", text);
+    setAttribute(slider, "aria-label", braking ? "Brakes" : "Throttle");
+    setAttribute(slider, "aria-valuemin", combined() ? "-100" : "0");
+    setAttribute(slider, "aria-valuenow", String(braking ? -percent : percent));
+    setAttribute(slider, "aria-valuetext", text);
+    setAttribute(slider, "aria-disabled", String(view.disabled === true));
+    setAttribute(slider, "tabindex", view.disabled ? "-1" : "0");
+    setAttribute(box, "title", title);
+    setAttribute(box, "data-afterburner", afterburner ? "active" : "inactive");
+    setAttribute(box, "data-brake-range", String(combined()));
+    setAttribute(box, "data-power", braking ? "brake" : "throttle");
+    if (state) setAttribute(box, "data-engine", state);
+    else if (box.hasAttribute("data-engine")) delete box.dataset.engine;
+    if (hold) setAttribute(box, "data-hold", hold);
+    else if (box.hasAttribute("data-hold")) delete box.dataset.hold;
   };
 
   const send = (value: number): void => {
