@@ -22,6 +22,10 @@ import type { EngineRunState } from "./engineControl";
  *
  * Keyboard: the arrow, Page and Home/End keys move it, and holding Space or
  * Enter does what holding the pointer on the handle does.
+ *
+ * A tap on the track takes the handle there, unless the host says the handle
+ * must be grabbed (`press: "grab"`). Coloured I-beams on the same scale show
+ * how fast the engine turns: N1 and N2 for a turbine, a piston's RPM.
  */
 
 export interface ThrottleLeverEngine {
@@ -30,6 +34,13 @@ export interface ThrottleLeverEngine {
   startProgress: number;
   /** Why a start cannot finish now, such as an empty tank. */
   blocked?: string | null;
+}
+
+/** One engine speed, drawn as an I-beam beside the lever. */
+export interface ThrottleLeverGauge {
+  label: "N1" | "N2" | "RPM";
+  /** The speed as a fraction of its maximum, 0 to 1. */
+  value: number;
 }
 
 export interface ThrottleLeverView {
@@ -50,7 +61,48 @@ export interface ThrottleLeverView {
   afterburner?: boolean | null;
   /** The throttle above which the afterburner lights. A press that starts below it stops there; null lets one press pass. */
   afterburnerDetent?: number | null;
+  /** How fast the engine turns; see `throttleLeverGauges`. */
+  gauges?: readonly ThrottleLeverGauge[];
+  /** "grab": a press off the handle neither moves nor takes it. Defaults to "jump", which takes the handle to the press. */
+  press?: "jump" | "grab";
   disabled?: boolean;
+}
+
+/** An engine reading, as the engine monitor or the phone's status frame carries it. */
+export interface ThrottleLeverGaugeSource {
+  kind?: "piston" | "turbine" | null;
+  n1Pct?: number | null;
+  n2Pct?: number | null;
+  rpm?: number | null;
+  maxN1Pct?: number | null;
+  maxN2Pct?: number | null;
+  maxRpm?: number | null;
+}
+
+/**
+ * The lever's I-beams for an engine: N1 and N2 against their maxima (100% when
+ * the model publishes none), or shaft RPM against the aircraft's rated RPM. A
+ * piston engine with no rated RPM has nothing to measure against, and gets none.
+ */
+export function throttleLeverGauges(source: ThrottleLeverGaugeSource | null | undefined): ThrottleLeverGauge[] {
+  if (!source) return [];
+  const fraction = (value: number | null | undefined, max: number | null | undefined): number | null => {
+    if (value === null || value === undefined || !Number.isFinite(value)) return null;
+    if (max === null || max === undefined || !Number.isFinite(max) || max <= 0) return null;
+    return clamp01(value / max);
+  };
+  const gauges: ThrottleLeverGauge[] = [];
+  if (source.kind !== "piston") {
+    const n1 = fraction(source.n1Pct, source.maxN1Pct ?? 100);
+    const n2 = fraction(source.n2Pct, source.maxN2Pct ?? 100);
+    if (n1 !== null) gauges.push({ label: "N1", value: n1 });
+    if (n2 !== null) gauges.push({ label: "N2", value: n2 });
+  }
+  if (source.kind !== "turbine") {
+    const rpm = fraction(source.rpm, source.maxRpm);
+    if (rpm !== null) gauges.push({ label: "RPM", value: rpm });
+  }
+  return gauges;
 }
 
 export interface ThrottleBrakeCommand {
@@ -120,7 +172,7 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
   slider.setAttribute("data-takes-keys", "ArrowUp ArrowDown ArrowLeft ArrowRight PageUp PageDown Home End Space Enter");
   slider.tabIndex = 0;
   slider.innerHTML = `
-    <span class="flight-throttle__track"><span class="flight-throttle__fill"></span></span>
+    <span class="flight-throttle__track"></span>
     <span class="flight-throttle__idle" aria-hidden="true"></span>
     <span class="flight-throttle__actual" aria-hidden="true" hidden></span>
     <span class="flight-throttle__handle">
@@ -131,6 +183,24 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
     </span>`;
   const handle = slider.querySelector<HTMLElement>(".flight-throttle__handle")!;
   const actualMarker = slider.querySelector<HTMLElement>(".flight-throttle__actual")!;
+  /** One I-beam per engine speed shown, made when first needed and hidden while not. */
+  const gaugeMarkers = new Map<ThrottleLeverGauge["label"], HTMLElement>();
+  const gaugeMarker = (label: ThrottleLeverGauge["label"]): HTMLElement => {
+    let marker = gaugeMarkers.get(label);
+    if (!marker) {
+      marker = document.createElement("span");
+      marker.className = "flight-throttle__gauge";
+      marker.dataset.gauge = label.toLowerCase();
+      marker.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span");
+      name.className = "flight-throttle__gauge-label";
+      name.textContent = label;
+      marker.append(name);
+      slider.insertBefore(marker, actualMarker);
+      gaugeMarkers.set(label, marker);
+    }
+    return marker;
+  };
   box.replaceChildren(label, output, slider);
   box.style.setProperty("--throttle-hold-ms", `${holdMs}ms`);
 
@@ -211,6 +281,11 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
       : combined() ? BRAKE_RANGE + actual * (1 - BRAKE_RANGE) : actual;
     const actualPercent = actual === undefined ? undefined : Math.round(actual * 100);
     const showActual = actual !== undefined && (actualBraking !== braking || actualPercent !== percent);
+    // A thousandth of the lever is under a pixel on any screen: finer only rewrites the page.
+    const gauges = (view.gauges ?? []).filter(gauge => Number.isFinite(gauge.value)).map(gauge => ({
+      label: gauge.label,
+      position: Math.round((combined() ? BRAKE_RANGE + clamp01(gauge.value) * (1 - BRAKE_RANGE) : clamp01(gauge.value)) * 1000) / 1000,
+    }));
     let text: string;
     let title: string;
     if (braking) {
@@ -234,14 +309,19 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
       text = `${text}; ${percent}% commanded ${braking ? "brakes" : "throttle"}; ${actualPercent}% actual ${actualBraking ? "brakes" : "throttle"}`;
       title = `${title} ${percent}% commanded; ${actualPercent}% actual ${actualBraking ? "brakes" : "throttle"}. Round handle: command. White I-beam: actual position.`;
     }
-    const key = [value, actualPosition, showActual, state, hold, afterburner, progress, text, title, combined(), view.disabled === true].join("|");
+    if (gauges.length) title = `${title} Coloured I-beams: engine ${gauges.map(gauge => gauge.label).join(" and ")}, against full speed.`;
+    const gaugeKey = gauges.map(gauge => `${gauge.label}${gauge.position}`).join(",");
+    const key = [value, actualPosition, showActual, gaugeKey, state, hold, afterburner, progress, text, title, combined(), view.disabled === true].join("|");
     if (key === drawn) return;
     drawn = key;
     setStyle(slider, "--throttle-value", String(value));
-    setStyle(slider, "--throttle-fill-start", String(braking ? value : idle()));
-    setStyle(slider, "--throttle-fill-size", String(Math.abs(value - idle())));
     if (actualMarker.hidden === showActual) actualMarker.hidden = !showActual;
     if (showActual) setStyle(slider, "--throttle-actual", String(actualPosition));
+    for (const [label, marker] of gaugeMarkers) {
+      const shownGauge = gauges.some(gauge => gauge.label === label);
+      if (marker.hidden === shownGauge) marker.hidden = !shownGauge;
+    }
+    for (const gauge of gauges) setStyle(gaugeMarker(gauge.label), "--throttle-gauge", String(gauge.position));
     setStyle(box, "--throttle-ring", String(progress));
     const nextLabel = braking ? "BRK" : "THR";
     if (label.textContent !== nextLabel) label.textContent = nextLabel;
@@ -329,8 +409,6 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
 
   const onPointerDown = (event: PointerEvent): void => {
     if (view.disabled || gesture || (event.pointerType === "mouse" && event.button !== 0)) return;
-    event.preventDefault();
-    capture(event.pointerId);
     const { bottom, travel, reach } = metrics();
     const value = shown();
     const onHandle = Math.abs(event.clientY - (bottom - value * travel)) <= reach;
@@ -338,6 +416,10 @@ export function createThrottleLever(box: HTMLElement, options: ThrottleLeverOpti
     // The brake range always drags; engine holds belong to idle and the throttle range.
     const inBrakeRange = combined() && requested < idle();
     const holding = !inBrakeRange && (onHandle || engineState() === "stopped") && beginHold(event.pointerId, event.clientY);
+    // A start is held anywhere, but with `press: "grab"` nothing else takes the lever from off the handle.
+    if (!holding && !onHandle && view.press === "grab") return;
+    event.preventDefault();
+    capture(event.pointerId);
     if (holding) {
       render();
       return;

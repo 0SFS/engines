@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createThrottleLever, SHUTDOWN_HOLD_MS, type ThrottleLeverEngine, type ThrottleLeverView } from "../src/throttleLever";
+import { createThrottleLever, SHUTDOWN_HOLD_MS, throttleLeverGauges, type ThrottleLeverEngine, type ThrottleLeverView } from "../src/throttleLever";
 
 /** A 114 px lever with a 14 px handle: 100 px of travel, idle's centre at y = 107. */
 function mount(view: Partial<ThrottleLeverView> = {}, engineControl = true, combined = false) {
@@ -511,6 +511,69 @@ describe("throttle lever", () => {
     t.show({ throttle: 0.3, engine: RUNNING, afterburner: false });
     expect(observer.takeRecords().length).toBeGreaterThan(0);
     observer.disconnect();
+  });
+
+  it("moves only from its handle when the host says it must be grabbed, but still starts from anywhere", () => {
+    const t = mount({ throttle: 0.5, engine: RUNNING, press: "grab" });
+    // Off the handle: not taken, so not captured, and nothing to release.
+    pointer(t.slider, "pointerdown", at(0.9));
+    pointer(t.slider, "pointermove", at(0.95));
+    pointer(t.slider, "pointerup", at(0.95));
+    expect(t.onThrottleChange).not.toHaveBeenCalled();
+    expect(t.slider.getAttribute("aria-valuenow")).toBe("50");
+    // On it, the handle goes as far as the pointer does.
+    pointer(t.slider, "pointerdown", at(0.5) + 3);
+    pointer(t.slider, "pointermove", at(0.5) + 3 - 20);
+    expect(t.onThrottleChange.mock.lastCall![0]).toBeCloseTo(0.7, 9);
+    pointer(t.slider, "pointerup", at(0.7));
+    // Engine off, holding to start is no jump: it works from anywhere on the lever.
+    t.show({ throttle: 0, engine: STOPPED, press: "grab" });
+    pointer(t.slider, "pointerdown", at(0.8), 2);
+    expect(t.onStartHold).toHaveBeenLastCalledWith(true);
+    expect(t.box.dataset.hold).toBe("start");
+  });
+
+  it("draws the engine's speeds as I-beams on the lever's own scale, and no fill", () => {
+    const t = mount({ throttle: 0.5, engine: RUNNING, gauges: [{ label: "N1", value: 0.82 }, { label: "N2", value: 0.9 }] });
+    expect(t.slider.querySelector(".flight-throttle__fill")).toBeNull();
+    const n1 = t.slider.querySelector<HTMLElement>('[data-gauge="n1"]')!;
+    const n2 = t.slider.querySelector<HTMLElement>('[data-gauge="n2"]')!;
+    expect(n1.style.getPropertyValue("--throttle-gauge")).toBe("0.82");
+    expect(n2.style.getPropertyValue("--throttle-gauge")).toBe("0.9");
+    expect(n1.textContent).toBe("N1");
+    expect(n1.getAttribute("aria-hidden")).toBe("true");
+    expect(t.box.title).toContain("Coloured I-beams: engine N1 and N2");
+    // Sub-pixel changes leave the page alone.
+    const observer = new MutationObserver(() => {});
+    observer.observe(t.box, { attributes: true, childList: true, subtree: true, characterData: true });
+    t.show({ throttle: 0.5, engine: RUNNING, gauges: [{ label: "N1", value: 0.8201 }, { label: "N2", value: 0.9 }] });
+    expect(observer.takeRecords()).toHaveLength(0);
+    observer.disconnect();
+    // A piston engine's shaft speed; the spools it no longer has go.
+    t.show({ throttle: 0.5, engine: RUNNING, gauges: [{ label: "RPM", value: 0.3 }] });
+    expect(n1.hidden).toBe(true);
+    expect(n2.hidden).toBe(true);
+    expect(t.slider.querySelector<HTMLElement>('[data-gauge="rpm"]')!.style.getPropertyValue("--throttle-gauge")).toBe("0.3");
+    t.show({ throttle: 0.5, engine: RUNNING, gauges: [] });
+    expect(t.slider.querySelector<HTMLElement>('[data-gauge="rpm"]')!.hidden).toBe(true);
+    expect(t.box.title).not.toContain("I-beams: engine");
+  });
+
+  it("puts the engine's speeds above the brake range on the combined lever", () => {
+    const t = mount({ throttle: 0.5, engine: RUNNING, gauges: [{ label: "N1", value: 0.5 }] }, true, true);
+    expect(t.slider.querySelector<HTMLElement>('[data-gauge="n1"]')!.style.getPropertyValue("--throttle-gauge")).toBe("0.6");
+  });
+
+  it("measures turbine spools against their maxima and a piston against its rated RPM", () => {
+    expect(throttleLeverGauges({ kind: "turbine", n1Pct: 50, n2Pct: 104, maxN2Pct: 104, rpm: 900 })).toEqual([
+      { label: "N1", value: 0.5 }, { label: "N2", value: 1 },
+    ]);
+    expect(throttleLeverGauges({ kind: "piston", rpm: 1350, maxRpm: 2700, n1Pct: 40 })).toEqual([{ label: "RPM", value: 0.5 }]);
+    // No rated RPM to measure against, no I-beam; nor for a reading the model does not publish.
+    expect(throttleLeverGauges({ kind: "piston", rpm: 1350, maxRpm: null })).toEqual([]);
+    expect(throttleLeverGauges({ kind: "turbine", n1Pct: null, n2Pct: Number.NaN })).toEqual([]);
+    expect(throttleLeverGauges({ kind: "turbine", n1Pct: 120 })).toEqual([{ label: "N1", value: 1 }]);
+    expect(throttleLeverGauges(null)).toEqual([]);
   });
 
   it("marks afterburner the way the HUD always has", () => {
