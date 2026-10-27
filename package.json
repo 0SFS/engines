@@ -30,6 +30,10 @@
       "source": "./src/engineRotorDefinitions.ts",
       "default": "./src/engineRotorDefinitions.ts"
     },
+    "./engineRegistry": {
+      "source": "./src/engineRegistry.ts",
+      "default": "./src/engineRegistry.ts"
+    },
     "./engineSpoolAnimation": {
       "source": "./src/engineSpoolAnimation.ts",
       "default": "./src/engineSpoolAnimation.ts"
