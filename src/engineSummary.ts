@@ -23,6 +23,8 @@ export interface EngineSummaryView {
   maxN1Pct?: number | null;
   maxN2Pct?: number | null;
   maxRpm?: number | null;
+  /** Optional shaft-specific explanation when the display scale is not a hardware maximum. */
+  rpmDescription?: string;
   /** Drives the phase colour. Null for a label this build does not know, which stays neutral. */
   phase: EnginePhase | null;
   label: string;
@@ -44,6 +46,7 @@ export interface EngineSummary {
   /** Ring host for the GPU orb renderer; numeric DOM remains independent of it. */
   spools: HTMLElement;
   render(view: EngineSummaryView, flowUnit: FuelFlowUnit): void;
+  destroy(): void;
 }
 
 /** JSBSim publishes mass flow per second; the summary reads it per hour. */
@@ -300,6 +303,7 @@ export function createEngineSummary(): EngineSummary {
     values,
     flow,
     spools,
+    destroy() { ringResize?.disconnect(); },
     render(view, unit) {
       updateText(phaseChip, view.label);
       if (view.phase === null) {
@@ -326,7 +330,7 @@ export function createEngineSummary(): EngineSummary {
         packSpoolRingOnce();
       } else if (piston) {
         updateText(rpmValue, view.rpm === null ? "—" : Math.round(view.rpm).toString());
-        updateTitle(spools, `${rpmValue.textContent} RPM · Orb motion: scaled shaft speed`
+        updateTitle(spools, view.rpmDescription ?? `${rpmValue.textContent} RPM · Orb motion: scaled shaft speed`
           + (view.maxRpm != null && view.maxRpm > 0 ? `, maximum ${view.maxRpm} RPM.` : ", maximum unavailable.")
           + " " + engineRotorDescription(view)
           + (view.rotorMotionDescription ? ` ${view.rotorMotionDescription}` : ""));

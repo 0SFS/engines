@@ -472,6 +472,7 @@ export function createEngineMonitor(root: HTMLElement, options: EngineMonitorOpt
       for (const stop of stopHistory) stop();
       animation.destroy();
       orbs.destroy();
+      summary.destroy();
       reading = null;
       liveData?.destroy();
       for (const help of detailHelpControls.splice(0)) help.destroy();

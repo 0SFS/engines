@@ -25,6 +25,8 @@ export interface EngineSpoolStatus {
 }
 export type EngineSpoolRendererStatus = EngineSpoolStatus;
 export interface EngineSpoolOptions extends EngineSpoolConfiguration {
+  /** Keep numeric readouts when WebGPU is unavailable, without attempting another backend. */
+  webgpuOnly?: boolean;
   /** A borrowed globe device; null forbids a second device. Undefined permits one phone-owned device. */
   device?: GPUDevice | null;
   onStatus?(status: EngineSpoolStatus): void;
@@ -469,7 +471,7 @@ export function createEngineSpoolRenderer(host: HTMLElement, options: EngineSpoo
     }
     publish(null, null);
     const requested = start ?? config.preference;
-    const candidates: Exclude<EngineSpoolBackend, "off">[] = requested === "webgl1" ? ["webgl1"]
+    const candidates: Exclude<EngineSpoolBackend, "off">[] = options.webgpuOnly ? ["webgpu"] : requested === "webgl1" ? ["webgl1"]
       : requested === "webgl2" ? ["webgl2", "webgl1"] : ["webgpu", "webgl2", "webgl1"];
     for (const kind of candidates) {
       if (destroyed || mine !== generation) return "off";
@@ -510,7 +512,7 @@ export function createEngineSpoolRenderer(host: HTMLElement, options: EngineSpoo
   };
   const downgrade = (kind: Exclude<EngineSpoolBackend, "off">): void => {
     if (kind === "webgpu") gpuUnavailable = true;
-    ready = choose(kind === "webgpu" ? "webgl2" : kind === "webgl2" ? "webgl1" : "off");
+    ready = choose(options.webgpuOnly ? "off" : kind === "webgpu" ? "webgl2" : kind === "webgl2" ? "webgl1" : "off");
   };
   const resize = typeof ResizeObserver === "function" ? new ResizeObserver(entries => {
     const entry = entries[0];

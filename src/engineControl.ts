@@ -62,7 +62,7 @@ export function engineIndices(sdk: Pick<EngineControlSdk, "queryPropertyCatalog"
 
 /** The engine fields of an aircraft's FDM profile that starting and stopping read. */
 export interface EngineStartProfile {
-  engine: "piston" | "turbine";
+  engine: "piston" | "turbine" | "none";
   startSpeed: { property: string; runningAt: number };
 }
 
@@ -70,6 +70,10 @@ export function createEngineControl(
   sdk: EngineControlSdk,
   profile: EngineStartProfile,
 ): EngineControl {
+  if (profile.engine === "none") {
+    const reading: EngineControlReading = { state: "running", startProgress: 1, blocked: null };
+    return { step: () => reading, shutdown() {}, reading: () => reading };
+  }
   const engines = engineIndices(sdk);
   const turbine = profile.engine === "turbine";
   const read = (property: string): number => sdk.getPropertyValue(property);

@@ -1,0 +1,75 @@
+.flight-quad-engine__summary {
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+}
+.flight-quad-engine__grid {
+  --quad-motor-size: 3.125rem;
+  display: grid;
+  grid-template-columns: repeat(2, var(--quad-motor-size));
+  grid-template-rows: repeat(2, auto);
+  position: relative;
+  gap: 7px 16px;
+  isolation: isolate;
+}
+.flight-quad-engine__grid::before,
+.flight-quad-engine__grid::after {
+  content: "";
+  position: absolute;
+  width: 2px;
+  height: 65%;
+  left: calc(50% - 1px);
+  top: 19%;
+  background: rgb(190 214 232 / .25);
+  z-index: -1;
+  transform: rotate(43deg);
+}
+.flight-quad-engine__grid::after { transform: rotate(-43deg); }
+.flight-quad-engine__front {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  font-size: 19px;
+  color: #becfe0;
+}
+.flight-quad-engine__motor {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  gap: 1px;
+}
+.flight-quad-engine__motor[data-position="front-left"] { grid-area: 1 / 1; }
+.flight-quad-engine__motor[data-position="front-right"] { grid-area: 1 / 2; }
+.flight-quad-engine__motor[data-position="rear-left"] { grid-area: 2 / 1; }
+.flight-quad-engine__motor[data-position="rear-right"] { grid-area: 2 / 2; }
+.flight-quad-engine__motor-label,
+.flight-quad-engine__source {
+  color: #a5b1c2;
+  font-size: 8px;
+  line-height: 1.15;
+}
+.flight-quad-engine__motor .flight-engine__spools { --size: var(--quad-motor-size); }
+.flight-quad-engine__motor .flight-engine__rpm .flight-engine__spool-value { font-size: 11px; }
+.flight-quad-engine__motor .flight-engine__phase { display: none; }
+.flight-quad-engine__motor[data-direction="-1"] .flight-engine__orb-canvas { transform: scaleX(-1); }
+.flight-quad-engine__details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.flight-quad-engine__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex-basis: 100%;
+}
+.flight-quad-engine__detail-slot { margin-inline: auto; }
+.flight-quad-engine__details .flight-quad-engine__grid { --quad-motor-size: 4.25rem; gap: 12px 25px; }
+.flight-quad-engine__details .flight-engine__rpm .flight-engine__spool-value { font-size: 14px; }
+.flight-quad-engine__details .flight-quad-engine__motor-label { font-size: 10px; }

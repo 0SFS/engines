@@ -81,6 +81,15 @@ afterEach(() => {
 });
 
 describe("engine spool GPU renderer", () => {
+  it("keeps numeric readouts without creating a WebGL context when a WebGPU-only host has no device", async () => {
+    const t = fixture({ webgl2: fakeGl(), webgl: fakeGl() });
+    const renderer = createEngineSpoolRenderer(t.host, { ...CONFIG, device: null, webgpuOnly: true });
+    await expect(renderer.ready).resolves.toBe("off");
+    expect(t.getContext).not.toHaveBeenCalled();
+    expect(t.canvas()).toBeNull();
+    expect(renderer.status.reason).toContain("numeric readings remain visible");
+    renderer.destroy();
+  });
   it("shares the supplied WebGPU device, draws one triangle and never requests or destroys another device", async () => {
     const gpu = fakeGpu();
     const t = fixture({ webgpu: gpu.context });

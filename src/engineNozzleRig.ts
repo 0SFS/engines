@@ -9,6 +9,14 @@ export interface EngineNozzleRigDefinition {
 }
 
 const X = new Vector3(1, 0, 0), Z = new Vector3(0, 0, 1);
+const hingeAxis = new Quaternion();
+
+/** Same product as `base.multiply(Quaternion.RotationAxis(axis, angle))`, stored on the node. */
+function poseHinge(node: TransformNode, base: Quaternion, axis: Vector3, angle: number, posed: Quaternion): void {
+  Quaternion.RotationAxisToRef(axis, angle, hingeAxis);
+  base.multiplyToRef(hingeAxis, posed);
+  node.rotationQuaternion = posed;
+}
 
 /** Geometric hypotheses for a rigid, slotted flap mechanism; not a native A8/A9 calibration. */
 export interface RigidNozzleProfile {
@@ -58,7 +66,7 @@ export function bindEngineNozzleRig(nodes: readonly TransformNode[], definition:
   const bearings = definition.bearingNames.map(name => nodes.find(node => node.name === name));
   if (bearings.some(node => !node)) throw new Error("Engine asset is missing a declared swivel bearing");
   const parts = bearings.map(node => ({ node: node!, rest: node!.rotationQuaternion?.clone()
-    ?? Quaternion.FromEulerVector(node!.rotation) }));
+    ?? Quaternion.FromEulerVector(node!.rotation), posed: new Quaternion() }));
   const profile = definition.apertureMechanism;
   const required = (name: string) => {
     const node = nodes.find(candidate => candidate.name === name);
@@ -70,7 +78,8 @@ export function bindEngineNozzleRig(nodes: readonly TransformNode[], definition:
     return (["Convergent", "Divergent", "ConvergentSeal", "DivergentSeal", "ConvergentSealShoe", "Fairing", "FairingSeal"] as const).map(role => {
       const angle = theta + (role.includes("Seal") ? Math.PI / profile.segmentCount : 0);
       return { role, node: required(`F135_${role}_${String(index + 1).padStart(2, "0")}`),
-        cos: Math.cos(angle), sin: Math.sin(angle), azimuth: Quaternion.RotationAxis(Z, angle - Math.PI / 2) };
+        cos: Math.cos(angle), sin: Math.sin(angle), azimuth: Quaternion.RotationAxis(Z, angle - Math.PI / 2),
+        posed: new Quaternion() };
     });
   }).flat();
   const exhaust = required("F135_Exhaust");
@@ -83,8 +92,7 @@ export function bindEngineNozzleRig(nodes: readonly TransformNode[], definition:
       if (pitch !== undefined && yaw !== undefined && Number.isFinite(pitch) && Number.isFinite(yaw)
         && (pitch !== lastPitch || yaw !== lastYaw)) {
         const angles = threeBearingAngles(pitch, yaw, definition.bearingInclinationRad);
-        for (let i = 0; i < parts.length; i++) parts[i].node.rotationQuaternion =
-          parts[i].rest.multiply(Quaternion.RotationAxis(Z, angles[i]));
+        for (let i = 0; i < parts.length; i++) poseHinge(parts[i].node, parts[i].rest, Z, angles[i], parts[i].posed);
         lastPitch = pitch; lastYaw = yaw;
       }
       if (aperture !== undefined && Number.isFinite(aperture)) {
@@ -103,7 +111,7 @@ export function bindEngineNozzleRig(nodes: readonly TransformNode[], definition:
             case "Fairing": radius = profile.fairingBaseRadius; z = profile.fairingBaseZ; angle = -geometry.fairingAngle; break;
           }
           part.node.position.set(radius * part.cos, radius * part.sin, z);
-          part.node.rotationQuaternion = part.azimuth.multiply(Quaternion.RotationAxis(X, angle));
+          poseHinge(part.node, part.azimuth, X, angle, part.posed);
         }
         exhaust.position.z = geometry.exitZ;
         lastAperture = bounded;
