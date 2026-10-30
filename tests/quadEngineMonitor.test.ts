@@ -29,6 +29,19 @@ beforeEach(() => {
 afterEach(() => { monitor?.destroy(); document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("quadcopter engine monitor", () => {
+  it("embeds a passive motor face without buttons and follows host display budgets", () => {
+    const onOpen = vi.fn();
+    let settings = { renderer: "off", fps: 0, turnsPerSecond: 0, pixelRatio: 1 };
+    monitor = createQuadEngineMonitor(root, { summaryMode: "passive", onOpen, getOrbSettings: () => settings });
+    expect(root.querySelector("button")).toBeNull();
+    expect(renderers.every(renderer => renderer.options.preference === "off")).toBe(true);
+    root.querySelector<HTMLElement>(".flight-quad-engine__summary")!.click();
+    expect(onOpen).not.toHaveBeenCalled();
+    settings = { renderer: "webgpu", fps: 30, turnsPerSecond: 1, pixelRatio: 2 };
+    monitor.update(reading(), true);
+    expect(root.querySelector('[data-position="front-left"]')?.getAttribute("data-rpm")).toBe("10001");
+  });
+
   it("maps independent motor readings to the shared Cessna RPM faces and retains missing as unavailable", () => {
     monitor = createQuadEngineMonitor(root);
     monitor.update(reading(), true);

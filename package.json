@@ -74,11 +74,15 @@
   },
   "peerDependencies": {
     "@0sfs/logging": "0.1.0",
+    "@0sfs/mods": "0.1.0",
     "@babylonjs/core": "8.56.2",
     "foss-earth": "0.1.0"
   },
   "peerDependenciesMeta": {
     "@0sfs/logging": {
+      "optional": true
+    },
+    "@0sfs/mods": {
       "optional": true
     },
     "@babylonjs/core": {

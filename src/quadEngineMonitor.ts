@@ -16,8 +16,14 @@ export interface QuadEngineReading {
   source: "simulated";
 }
 export interface QuadEngineMonitorOptions {
+  /** A passive face can be embedded in a flight joystick without nesting buttons. */
+  summaryMode?: "button" | "passive";
+  /** Host-controlled display budgets, including a paired phone's received settings. */
+  getOrbSettings?(): { fps: number; pixelRatio: number; turnsPerSecond: number; renderer: string; maxPatternStep?: number };
   /** Borrowed from the flight renderer; this component never requests a device. */
   gpuDevice?: GPUDevice | null;
+  /** A phone without a globe may use the spool renderer's shared owned device. */
+  allowOwnDevice?: boolean;
   parameters?: EngineParameterStore;
   now?: () => number;
   onOpen?(): void;
@@ -42,11 +48,12 @@ export function createQuadEngineMonitor(root: HTMLElement, options: QuadEngineMo
     return node;
   };
   const text = (node: HTMLElement, value: string) => { if (node.textContent !== value) node.textContent = value; };
-  const container = element("section", "flight-engine flight-quad-engine");
+  const passive = options.summaryMode === "passive";
+  const container = element(passive ? "span" : "section", "flight-engine flight-quad-engine");
   container.setAttribute("aria-label", "Quadcopter motor monitor");
-  const toggle = element("button", "flight-engine__summary flight-quad-engine__summary");
-  toggle.type = "button";
-  toggle.setAttribute("aria-label", "Open quadcopter engine details");
+  const toggle = element(passive ? "span" : "button", "flight-engine__summary flight-quad-engine__summary");
+  if (toggle instanceof HTMLButtonElement) toggle.type = "button";
+  toggle.setAttribute("aria-label", passive ? "Quadcopter motor RPM" : "Open quadcopter engine details");
   const details = element("section", "flight-engine flight-quad-engine__details");
   details.setAttribute("aria-label", "Quadcopter engine details");
   const heading = element("strong", "flight-quad-engine__heading", "Quadcopter motors");
@@ -65,10 +72,10 @@ export function createQuadEngineMonitor(root: HTMLElement, options: QuadEngineMo
   let attached: HTMLElement | null = null;
 
   const configuration = (): EngineSpoolConfiguration => ({
-    preference: parameters.get("osfs.renderer.engineOrbs") === "off" ? "off" : "webgpu",
-    maxFps: parameters.get("osfs.engineMonitor.orbFps"),
-    pixelRatio: parameters.get("osfs.engineMonitor.orbPixelRatio"),
-    maxPatternStep: parameters.get("osfs.engineMonitor.orbMaxPatternStep"),
+    preference: (options.getOrbSettings?.().renderer ?? parameters.get("osfs.renderer.engineOrbs")) === "off" ? "off" : "webgpu",
+    maxFps: options.getOrbSettings?.().fps ?? parameters.get("osfs.engineMonitor.orbFps"),
+    pixelRatio: options.getOrbSettings?.().pixelRatio ?? parameters.get("osfs.engineMonitor.orbPixelRatio"),
+    maxPatternStep: options.getOrbSettings?.().maxPatternStep ?? parameters.get("osfs.engineMonitor.orbMaxPatternStep"),
     outerBlades: 2, innerBlades: 0,
   });
   function createFace() {
@@ -83,7 +90,7 @@ export function createQuadEngineMonitor(root: HTMLElement, options: QuadEngineMo
       const label = element("span", "flight-quad-engine__motor-label", short);
       const summary = createEngineSummary();
       const renderer = createEngineSpoolRenderer(summary.spools, {
-        ...configuration(), device: options.gpuDevice ?? null, webgpuOnly: true,
+        ...configuration(), device: options.gpuDevice === undefined && !options.allowOwnDevice ? null : options.gpuDevice, webgpuOnly: true,
       });
       const animation = createEngineSpoolAnimation({
         now: options.now, document,
@@ -112,7 +119,7 @@ export function createQuadEngineMonitor(root: HTMLElement, options: QuadEngineMo
           motor.summary.render(view, "lb/h");
           motor.renderer.configure(config);
           motor.animation.update({ simTimeS: next?.simTimeS ?? null, held: paused,
-            speeds: engineRotorSpeeds(view), turnsPerSecond: parameters.get("osfs.engineMonitor.orbTurnsPerSecond"),
+            speeds: engineRotorSpeeds(view), turnsPerSecond: options.getOrbSettings?.().turnsPerSecond ?? parameters.get("osfs.engineMonitor.orbTurnsPerSecond"),
             enabled: config.preference !== "off" && rpm !== null && maxRpm !== null });
         }
       },
@@ -126,14 +133,14 @@ export function createQuadEngineMonitor(root: HTMLElement, options: QuadEngineMo
   toggle.append(compact.grid, compactSource);
   container.append(toggle); root.append(container);
   const open = () => { if (!destroyed) options.onOpen?.(); };
-  toggle.addEventListener("click", open);
+  if (!passive) toggle.addEventListener("click", open);
   const detach = () => {
     help.close();
     details.remove(); attached = null;
     detailFace?.destroy(); detailFace = null;
-    toggle.setAttribute("aria-expanded", "false");
+    if (!passive) toggle.setAttribute("aria-expanded", "false");
   };
-  toggle.setAttribute("aria-expanded", "false");
+  if (!passive) toggle.setAttribute("aria-expanded", "false");
   const handle: QuadEngineMonitor = {
     update(next, paused = false) {
       if (destroyed) return;
@@ -147,7 +154,7 @@ export function createQuadEngineMonitor(root: HTMLElement, options: QuadEngineMo
       detach(); attached = host;
       detailFace = createFace(); detailSlot.replaceChildren(detailFace.grid);
       host.append(details);
-      toggle.setAttribute("aria-expanded", "true");
+      if (!passive) toggle.setAttribute("aria-expanded", "true");
       detailFace.update(reading, held);
       return () => { if (attached === host) detach(); };
     },
